@@ -1,7 +1,7 @@
 import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
+
+import psycopg2
 
 DB_CONFIG = {
     "host":            os.getenv("DB_HOST",     "localhost"),

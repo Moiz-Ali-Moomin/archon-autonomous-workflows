@@ -3,7 +3,7 @@ pip install -e .   →  adds `archon` to your PATH via the entry_points mechanis
 Works on Windows, Linux, and macOS.
 """
 
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
 setup(
     name="archon-cli",

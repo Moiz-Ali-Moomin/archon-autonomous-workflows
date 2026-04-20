@@ -7,13 +7,12 @@ caller never has to inspect raw HTTP exceptions.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
-import requests
-from requests.exceptions import ConnectionError, Timeout, RequestException
-
 import config
+import requests
+from requests.exceptions import ConnectionError, RequestException, Timeout
 
 
 class ArchonAPIError(Exception):
@@ -58,12 +57,12 @@ def run_task(goal: str) -> str:
             headers=_headers(),
             timeout=config.REQUEST_TIMEOUT,
         )
-    except ConnectionError:
-        raise ArchonAPIError(f"Cannot reach backend at {config.API_URL}. Is the server running?")
-    except Timeout:
-        raise ArchonAPIError(f"Request timed out after {config.REQUEST_TIMEOUT}s.")
+    except ConnectionError as exc:
+        raise ArchonAPIError(f"Cannot reach backend at {config.API_URL}. Is the server running?") from exc
+    except Timeout as exc:
+        raise ArchonAPIError(f"Request timed out after {config.REQUEST_TIMEOUT}s.") from exc
     except RequestException as exc:
-        raise ArchonAPIError(f"Network error: {exc}")
+        raise ArchonAPIError(f"Network error: {exc}") from exc
 
     if resp.status_code == 401:
         raise ArchonAPIError("Authentication failed – check your API key.", 401)
@@ -86,12 +85,12 @@ def get_status(task_id: str) -> TaskStatus:
             headers=_headers(),
             timeout=config.REQUEST_TIMEOUT,
         )
-    except ConnectionError:
-        raise ArchonAPIError(f"Lost connection to backend at {config.API_URL}.")
-    except Timeout:
-        raise ArchonAPIError(f"Status request timed out after {config.REQUEST_TIMEOUT}s.")
+    except ConnectionError as exc:
+        raise ArchonAPIError(f"Lost connection to backend at {config.API_URL}.") from exc
+    except Timeout as exc:
+        raise ArchonAPIError(f"Status request timed out after {config.REQUEST_TIMEOUT}s.") from exc
     except RequestException as exc:
-        raise ArchonAPIError(f"Network error: {exc}")
+        raise ArchonAPIError(f"Network error: {exc}") from exc
 
     if resp.status_code == 404:
         raise ArchonAPIError(f"Task '{task_id}' not found.", 404)
@@ -121,12 +120,12 @@ def health_check() -> dict:
             headers=_headers(),
             timeout=config.REQUEST_TIMEOUT,
         )
-    except ConnectionError:
-        raise ArchonAPIError(f"Cannot reach backend at {config.API_URL}.")
-    except Timeout:
-        raise ArchonAPIError("Health check timed out.")
+    except ConnectionError as exc:
+        raise ArchonAPIError(f"Cannot reach backend at {config.API_URL}.") from exc
+    except Timeout as exc:
+        raise ArchonAPIError("Health check timed out.") from exc
     except RequestException as exc:
-        raise ArchonAPIError(f"Network error: {exc}")
+        raise ArchonAPIError(f"Network error: {exc}") from exc
 
     if not resp.ok:
         raise ArchonAPIError(f"Health endpoint returned {resp.status_code}.", resp.status_code)
@@ -151,12 +150,10 @@ def poll_until_done(
     """
     terminal = {"success", "failure", "error"}
     deadline = time.monotonic() + max_seconds
-    last_status: TaskStatus | None = None
 
     while time.monotonic() < deadline:
         status = get_status(task_id)
         on_update(status)
-        last_status = status
         if status.status in terminal:
             return status
         time.sleep(interval)

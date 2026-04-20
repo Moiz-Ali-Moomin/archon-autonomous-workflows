@@ -5,6 +5,7 @@ All values can be overridden via environment variables or a local .env file.
 
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 # Walk up from archon/ until we find a .env file (project root)

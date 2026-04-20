@@ -1,10 +1,12 @@
-import os
 import logging
+import os
+
 from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
+
+from graph import store_task_graph
 from redis_client import update_task_state
 from workflow import init_db, run_workflow
-from graph import store_task_graph
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,4 +80,4 @@ def run_agent_task(self, task_id: str, goal: str):
     except Exception as exc:
         log.exception("task_id=%s failed: %s", task_id, exc)
         update_task_state(task_id, {"status": "error", "last_error": str(exc)})
-        raise self.retry(exc=exc, countdown=10, max_retries=1)
+        raise self.retry(exc=exc, countdown=10, max_retries=1) from exc

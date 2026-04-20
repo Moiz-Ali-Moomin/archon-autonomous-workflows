@@ -7,12 +7,10 @@ from __future__ import annotations
 import json
 import os
 import platform
-import subprocess
 from datetime import datetime
 from pathlib import Path
 
 import config
-
 
 # ── Terminal clear ─────────────────────────────────────────────────────────────
 
@@ -69,7 +67,7 @@ class SessionHistory:
         if path.exists():
             try:
                 lines = path.read_text(encoding="utf-8").splitlines()
-                self._entries = [l for l in lines if l.strip()][-config.MAX_HISTORY:]
+                self._entries = [line for line in lines if line.strip()][-config.MAX_HISTORY:]
             except OSError:
                 pass
 

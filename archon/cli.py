@@ -7,12 +7,10 @@ Or via package: python -m archon
 
 from __future__ import annotations
 
+import os
 import sys
-import threading
-from typing import Optional
 
 # ── ensure archon/ is importable when run directly ───────────────────────────
-import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 import config
@@ -51,7 +49,7 @@ class ArchonREPL:
             style=pt_style,
         )
 
-    def _read_input(self) -> Optional[str]:
+    def _read_input(self) -> str | None:
         prompt_str = ui.get_prompt()
         try:
             if self._session:
@@ -136,7 +134,7 @@ class ArchonREPL:
         ui.print_task_id(task_id)
 
         # 2. Poll with spinner
-        last_seen_status: Optional[str] = None
+        last_seen_status: str | None = None
 
         def on_update(status) -> None:
             nonlocal last_seen_status

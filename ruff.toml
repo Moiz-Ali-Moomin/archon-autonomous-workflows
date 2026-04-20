@@ -9,7 +9,8 @@ ignore = [
 ]
 
 [lint.per-file-ignores]
-"archon/*" = ["UP"]   # archon CLI targets Python 3.10+
+"archon/*" = ["UP"]
+"archon/cli.py" = ["UP", "I001", "E402"]   # sys.path manipulation must precede local imports
 
 [format]
 quote-style = "double"

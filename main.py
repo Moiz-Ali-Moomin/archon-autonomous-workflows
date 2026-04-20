@@ -1,19 +1,21 @@
-import uuid
-import os
 import logging
+import os
+import uuid
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Security, Request
-from fastapi.security import APIKeyHeader
+
+from fastapi import FastAPI, HTTPException, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, field_validator
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 from starlette.responses import JSONResponse
-from redis_client import get_task_state, set_task_state, get_redis
-from tasks import run_agent_task
+
 from db import check_db
+from redis_client import get_redis, get_task_state, set_task_state
+from tasks import run_agent_task
 from workflow import ask_gemma as gemma_chat
 
 logging.basicConfig(

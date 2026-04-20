@@ -6,19 +6,16 @@ Nothing in here makes HTTP calls – it only receives data and displays it.
 from __future__ import annotations
 
 import json
-import os
 import shutil
-from typing import Optional
 
+import config
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
-from rich import box
-
-import config
 
 console = Console()
 
@@ -51,11 +48,10 @@ BANNER = r"""
 """
 
 def print_banner() -> None:
-    term_width = shutil.get_terminal_size((80, 20)).columns
     text = Text(BANNER, style=_t("banner"), justify="left")
     console.print(text)
     console.print(
-        f"  [bold]⚡ Archon AI v1.0[/bold] – [dim]Autonomous Coding Agent[/dim]",
+        "  [bold]⚡ Archon AI v1.0[/bold] – [dim]Autonomous Coding Agent[/dim]",
         style=_t("banner"),
     )
     console.print(
