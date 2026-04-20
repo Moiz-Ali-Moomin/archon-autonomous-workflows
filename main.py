@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse
 from redis_client import get_task_state, set_task_state, get_redis
 from tasks import run_agent_task
 from db import check_db
-from workflow import gemma
+from workflow import ask_gemma
 
 logging.basicConfig(
     level=logging.INFO,
@@ -109,7 +109,7 @@ class AskResponse(BaseModel):
 @app.post("/ask", response_model=AskResponse)
 @limiter.limit("20/minute")
 async def ask_gemma(request: Request, body: AskRequest, _key: str = Security(verify_api_key)):
-    answer = gemma(body.question)
+    answer = ask_gemma(body.question)
     if not answer:
         raise HTTPException(status_code=503, detail="Gemma unavailable")
     return AskResponse(answer=answer)

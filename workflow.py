@@ -121,6 +121,19 @@ def get_memory(goal):
         log.warning("get_memory failed: %s", e)
         return []
 
+# ================= GEMMA — chat ================= #
+def ask_gemma(question):
+    try:
+        r = requests.post(OLLAMA_URL, json={
+            "model": "gemma:2b",
+            "prompt": question,
+            "stream": False
+        }, timeout=120)
+        return r.json().get("response", "")
+    except Exception as e:
+        log.error("ask_gemma error: %s", e)
+        return ""
+
 # ================= GEMMA — planner ================= #
 def planner(goal, memory_rows):
     memory_section = ""
