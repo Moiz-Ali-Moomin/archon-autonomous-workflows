@@ -416,7 +416,7 @@ def run_workflow(goal, task_id=None, on_iteration=None):
             "success": execution["success"],
             "execution": execution,
             "iterations": i + 1,
-            "last_error": execution.get("stderr") or execution.get("stdout"),
+            "last_error": execution.get("stderr") or None,
             "files_written": list(build["files"].keys()),
             "task_dir": task_dir,
         }
