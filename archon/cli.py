@@ -142,7 +142,7 @@ class ArchonREPL:
                 task_desc = f"[bold]{status.status.upper()}[/bold]" + (
                     f"  iteration {status.iteration}" if status.iteration else ""
                 )
-                spinner_task.description = task_desc  # type: ignore[attr-defined]
+                progress.update(spinner_task, description=task_desc)
                 ui.print_status_update(status)
 
         from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
