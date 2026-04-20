@@ -266,7 +266,7 @@ def warn(msg: str) -> None:
 
 
 def print_task_id(task_id: str) -> None:
-    console.print(f"\n  [{_t('info')}]Task queued →[/{_t('info')}] [bold]{task_id}[/bold]\n")
+    pass
 
 
 # ── Health display ────────────────────────────────────────────────────────────
