@@ -248,7 +248,9 @@ def node_agent(state: AgentState) -> Command[Literal["tools", "save"]]:
     response = get_llm().invoke(messages)
 
     has_tool_calls = bool(getattr(response, "tool_calls", None))
-    goto: Literal["tools", "save"] = "tools" if has_tool_calls and iteration < MAX_ITERATIONS else "save"
+    goto: Literal["tools", "save"] = (
+        "tools" if has_tool_calls and iteration < MAX_ITERATIONS else "save"
+    )
 
     return Command(update={"messages": [response], "iteration": iteration}, goto=goto)
 
