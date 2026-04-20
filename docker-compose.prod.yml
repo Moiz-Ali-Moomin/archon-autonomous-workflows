@@ -8,18 +8,18 @@
 services:
   api:
     build: ~        # disable local build
-    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    image: ${APP_IMAGE:-ghcr.io/moiz-ali-moomin/archon-autonomous-workflows:latest}
     restart: always
     pull_policy: always
 
   worker:
     build: ~
-    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    image: ${APP_IMAGE:-ghcr.io/moiz-ali-moomin/archon-autonomous-workflows:latest}
     restart: always
     pull_policy: always
 
   flower:
     build: ~
-    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    image: ${APP_IMAGE:-ghcr.io/moiz-ali-moomin/archon-autonomous-workflows:latest}
     restart: always
     pull_policy: always
