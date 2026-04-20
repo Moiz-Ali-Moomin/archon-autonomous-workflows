@@ -8,5 +8,6 @@ pgvector==0.3.6
 neo4j==5.27.0
 requests==2.32.3
 pydantic==2.10.4
+flower==2.0.1
 slowapi==0.1.9
 python-dotenv==1.0.1
