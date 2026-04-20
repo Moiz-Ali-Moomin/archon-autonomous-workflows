@@ -1,8 +1,9 @@
 import json
 import logging
 import os
+import threading
 import uuid
-from typing import Annotated, TypedDict
+from typing import Annotated, Literal, TypedDict
 
 import psycopg2
 import requests
@@ -13,6 +14,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
+from langgraph.types import Command
 
 from tools import ALL_TOOLS
 
@@ -161,16 +163,19 @@ def ask_gemma(question):
 # ── LLM with tools ─────────────────────────────────────────────────────────────
 
 _llm = None
+_llm_lock = threading.Lock()
 
 
 def get_llm():
     global _llm
     if _llm is None:
-        _llm = ChatAnthropic(
-            model=ANTHROPIC_MODEL,
-            api_key=os.environ["ANTHROPIC_API_KEY"],
-            max_tokens=4096,
-        ).bind_tools(ALL_TOOLS)
+        with _llm_lock:
+            if _llm is None:
+                _llm = ChatAnthropic(
+                    model=ANTHROPIC_MODEL,
+                    api_key=os.environ["ANTHROPIC_API_KEY"],
+                    max_tokens=4096,
+                ).bind_tools(ALL_TOOLS)
     return _llm
 
 
@@ -212,7 +217,7 @@ def node_fetch_memory(state: AgentState) -> dict:
     return {"memory_rows": rows}
 
 
-def node_agent(state: AgentState) -> dict:
+def node_agent(state: AgentState) -> Command[Literal["tools", "save"]]:
     iteration = state["iteration"] + 1
 
     memory_section = ""
@@ -233,20 +238,19 @@ def node_agent(state: AgentState) -> dict:
         + memory_section
     )
 
-    messages = list(state["messages"])
-
-    if not messages:
-        messages = [
-            SystemMessage(content=system_content),
-            HumanMessage(content=f"Goal: {state['goal']}"),
-        ]
-    elif not isinstance(messages[0], SystemMessage):
-        messages = [SystemMessage(content=system_content)] + messages
+    # Always rebuild with a fresh SystemMessage; preserve all non-system history.
+    prior = [m for m in state["messages"] if not isinstance(m, SystemMessage)]
+    if not prior:
+        prior = [HumanMessage(content=f"Goal: {state['goal']}")]
+    messages = [SystemMessage(content=system_content)] + prior
 
     log.info("task=%s agent iteration=%d", state["task_id"], iteration)
     response = get_llm().invoke(messages)
 
-    return {"messages": [response], "iteration": iteration}
+    has_tool_calls = bool(getattr(response, "tool_calls", None))
+    goto: Literal["tools", "save"] = "tools" if has_tool_calls and iteration < MAX_ITERATIONS else "save"
+
+    return Command(update={"messages": [response], "iteration": iteration}, goto=goto)
 
 
 def node_save(state: AgentState) -> dict:
@@ -282,18 +286,6 @@ def node_save(state: AgentState) -> dict:
     return {"success": success, "last_error": last_error}
 
 
-# ── Routing ────────────────────────────────────────────────────────────────────
-
-
-def route_agent(state: AgentState) -> str:
-    messages = state.get("messages", [])
-    last = messages[-1] if messages else None
-    if last and hasattr(last, "tool_calls") and last.tool_calls:
-        if state["iteration"] < MAX_ITERATIONS:
-            return "tools"
-    return "save"
-
-
 # ── Graph assembly ─────────────────────────────────────────────────────────────
 
 
@@ -307,11 +299,7 @@ def _build_graph(checkpointer):
 
     g.add_edge(START, "fetch_memory")
     g.add_edge("fetch_memory", "agent")
-    g.add_conditional_edges(
-        "agent",
-        route_agent,
-        {"tools": "tools", "save": "save"},
-    )
+    # agent returns Command(goto=...) — no conditional edge needed
     g.add_edge("tools", "agent")
     g.add_edge("save", END)
 
@@ -320,15 +308,18 @@ def _build_graph(checkpointer):
 
 _graph = None
 _checkpointer = None
+_graph_lock = threading.Lock()
 
 
 def _get_graph():
     global _graph, _checkpointer
     if _graph is None:
-        _checkpointer = PostgresSaver.from_conn_string(_pg_conn_string())
-        _checkpointer.setup()
-        log.info("checkpoint store ready")
-        _graph = _build_graph(_checkpointer)
+        with _graph_lock:
+            if _graph is None:
+                _checkpointer = PostgresSaver.from_conn_string(_pg_conn_string())
+                _checkpointer.setup()
+                log.info("checkpoint store ready")
+                _graph = _build_graph(_checkpointer)
     return _graph
 
 
