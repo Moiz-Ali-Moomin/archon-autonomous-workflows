@@ -1,15 +1,20 @@
 import json
 import logging
 import os
-import re
-import shlex
-import subprocess
 import uuid
+from typing import Annotated, Any, TypedDict
 
 import anthropic
 import psycopg2
 import requests
 from dotenv import load_dotenv
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.graph import END, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
+
+from tools import ALL_TOOLS, set_task_context
 
 load_dotenv()
 
@@ -19,9 +24,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("workflow")
 
-# ================= CONFIG ================= #
+# ── Config ─────────────────────────────────────────────────────────────────────
 _OLLAMA_BASE = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-OLLAMA_URL = f"{_OLLAMA_BASE}/api/generate"
 EMBED_URL = f"{_OLLAMA_BASE}/api/embeddings"
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
@@ -34,8 +38,7 @@ DB_CONFIG = {
 }
 
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "output")
-CODE_TIMEOUT = int(os.getenv("CODE_TIMEOUT", "30"))
-MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "3"))
+MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "10"))
 
 _anthropic_client = None
 
@@ -47,7 +50,25 @@ def get_anthropic():
     return _anthropic_client
 
 
-# ================= DB ================= #
+# ── State ──────────────────────────────────────────────────────────────────────
+
+
+class AgentState(TypedDict):
+    goal: str
+    task_id: str
+    task_dir: str
+    messages: Annotated[list, add_messages]
+    memory_rows: list
+    success: bool
+    last_error: str | None
+    iteration: int
+    files_written: list
+    on_iteration: Any | None  # progress callback – not serialized
+
+
+# ── DB ─────────────────────────────────────────────────────────────────────────
+
+
 def get_conn():
     return psycopg2.connect(**DB_CONFIG)
 
@@ -57,7 +78,6 @@ def init_db():
     cur = conn.cursor()
     cur.execute("""
     CREATE EXTENSION IF NOT EXISTS vector;
-
     CREATE TABLE IF NOT EXISTS memory (
         id SERIAL PRIMARY KEY,
         goal TEXT,
@@ -71,11 +91,15 @@ def init_db():
     log.info("DB schema ready")
 
 
-# ================= EMBEDDING ================= #
+# ── Embedding ──────────────────────────────────────────────────────────────────
+
+
 def embed(text):
     try:
         res = requests.post(
-            EMBED_URL, json={"model": "nomic-embed-text", "prompt": text}, timeout=30
+            EMBED_URL,
+            json={"model": "nomic-embed-text", "prompt": text},
+            timeout=30,
         )
         return res.json()["embedding"]
     except Exception as e:
@@ -84,20 +108,18 @@ def embed(text):
 
 
 def embed_vector_str(text):
-    vec = embed(text)
-    return "[" + ",".join(map(str, vec)) + "]"
+    return "[" + ",".join(map(str, embed(text))) + "]"
 
 
-# ================= MEMORY ================= #
+# ── Memory ─────────────────────────────────────────────────────────────────────
+
+
 def save_memory(goal, result, success):
     try:
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
-            """
-            INSERT INTO memory (goal, result, success, embedding)
-            VALUES (%s, %s, %s, %s::vector)
-            """,
+            "INSERT INTO memory (goal, result, success, embedding) VALUES (%s, %s, %s, %s::vector)",
             (goal, json.dumps(result), success, embed_vector_str(goal)),
         )
         conn.commit()
@@ -111,12 +133,7 @@ def get_memory(goal):
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
-            """
-            SELECT goal, result, success
-            FROM memory
-            ORDER BY embedding <=> %s::vector
-            LIMIT 3;
-            """,
+            "SELECT goal, result, success FROM memory ORDER BY embedding <=> %s::vector LIMIT 3",
             (embed_vector_str(goal),),
         )
         rows = cur.fetchall()
@@ -127,11 +144,16 @@ def get_memory(goal):
         return []
 
 
-# ================= GEMMA — chat ================= #
+# ── Gemma chat (used by /ask endpoint) ────────────────────────────────────────
+
+
 def ask_gemma(question):
     try:
+        ollama_url = f"{_OLLAMA_BASE}/api/generate"
         r = requests.post(
-            OLLAMA_URL, json={"model": "gemma:2b", "prompt": question, "stream": False}, timeout=120
+            ollama_url,
+            json={"model": "gemma:2b", "prompt": question, "stream": False},
+            timeout=120,
         )
         return r.json().get("response", "")
     except Exception as e:
@@ -139,330 +161,199 @@ def ask_gemma(question):
         return ""
 
 
-# ================= GEMMA — planner ================= #
-def planner(goal, memory_rows):
+# ── LLM with tools ─────────────────────────────────────────────────────────────
+
+_llm = None
+
+
+def get_llm():
+    global _llm
+    if _llm is None:
+        _llm = ChatAnthropic(
+            model=ANTHROPIC_MODEL,
+            api_key=os.environ["ANTHROPIC_API_KEY"],
+            max_tokens=4096,
+        ).bind_tools(ALL_TOOLS)
+    return _llm
+
+
+# ── LangGraph nodes ────────────────────────────────────────────────────────────
+
+
+def node_fetch_memory(state: AgentState) -> dict:
+    rows = get_memory(state["goal"])
+    log.info("task=%s memory_hits=%d", state["task_id"], len(rows))
+    return {"memory_rows": rows}
+
+
+def node_agent(state: AgentState) -> dict:
+    iteration = state["iteration"] + 1
+
+    if state.get("on_iteration"):
+        state["on_iteration"](iteration, state.get("last_error"))
+
+    set_task_context(state["task_dir"])
+
+    # Build system prompt
     memory_section = ""
-    if memory_rows:
-        lines = []
-        for row in memory_rows:
-            g, result_json, success = row
-            status = "succeeded" if success else "failed"
-            lines.append(f"- Goal: {g} | Status: {status}")
-        memory_section = "\nPast similar tasks:\n" + "\n".join(lines) + "\n"
+    if state.get("memory_rows"):
+        lines = [
+            f"- Goal: {g} | Status: {'succeeded' if s else 'failed'}"
+            for g, _, s in state["memory_rows"]
+        ]
+        memory_section = "\n\nPast similar tasks:\n" + "\n".join(lines)
 
-    prompt = f"""You are a software planning assistant. Break down the following goal into a concise implementation spec for a Python script.
-
-Goal: {goal}
-{memory_section}
-Return a JSON object with this exact shape:
-{{
-  "description": "<one sentence of what the script does>",
-  "inputs": "<what arguments or input the script needs>",
-  "outputs": "<what the script should print or produce>",
-  "steps": ["<step 1>", "<step 2>", "..."],
-  "run": "<shell command to execute the script, e.g. python main.py>"
-}}
-
-JSON:"""
-
-    try:
-        r = requests.post(
-            OLLAMA_URL, json={"model": "gemma:2b", "prompt": prompt, "stream": False}, timeout=120
-        )
-        raw = r.json().get("response", "")
-        log.debug("planner raw: %s", raw[:300])
-
-        spec = extract_json(raw)
-        if _spec_is_confident(spec, goal):
-            log.info("planner produced spec: %s", spec.get("description"))
-            return spec
-        log.warning("planner spec failed confidence check — using fallback")
-    except Exception as e:
-        log.warning("planner error: %s", e)
-
-    # fallback: pass goal directly as minimal spec
-    log.warning("planner fallback — using raw goal as spec")
-    return {
-        "description": goal,
-        "inputs": "none",
-        "outputs": "result printed to stdout",
-        "steps": [goal],
-        "run": "python main.py",
-    }
-
-
-def _spec_is_confident(spec, goal):
-    if not spec:
-        return False
-    required = ("description", "steps", "run")
-    if not all(k in spec for k in required):
-        return False
-    if not isinstance(spec.get("steps"), list) or len(spec["steps"]) == 0:
-        return False
-    # reject placeholder text the model sometimes echoes back verbatim
-    bad_phrases = ("<", "step 1>", "one sentence", "shell command")
-    desc = spec.get("description", "").lower()
-    if any(p in desc for p in bad_phrases):
-        return False
-    # spec should at least loosely reference something from the goal
-    goal_words = set(goal.lower().split())
-    desc_words = set(desc.split())
-    if len(goal_words & desc_words) == 0 and len(goal_words) > 2:
-        return False
-    return True
-
-
-# ================= CLAUDE — builder ================= #
-def builder(spec, goal):
     system = (
-        "You are an expert Python developer. "
-        "You write clean, working Python scripts. "
-        "You always respond with ONLY a JSON object — no markdown, no prose, no explanation."
+        "You are an autonomous coding agent. "
+        "Your task directory is available via tools — use write_file, run_python, "
+        "web_search, read_file, list_files, and install_package to accomplish the goal. "
+        "Always write code to main.py, then run it. "
+        "If there is an error, fix it and run again. "
+        "When the goal is complete and the code runs successfully, stop calling tools."
+        + memory_section
     )
 
-    user = f"""Write a complete Python script based on this spec.
+    messages = list(state["messages"])
+    if not messages:
+        messages = [
+            SystemMessage(content=system),
+            HumanMessage(content=f"Goal: {state['goal']}"),
+        ]
 
-Goal: {goal}
+    log.info("task=%s agent iteration=%d", state["task_id"], iteration)
+    response = get_llm().invoke(messages)
 
-Spec:
-- Description: {spec.get("description")}
-- Inputs: {spec.get("inputs")}
-- Outputs: {spec.get("outputs")}
-- Steps: {json.dumps(spec.get("steps", []))}
-
-Return ONLY this JSON shape:
-{{
-  "files": {{"main.py": "<full python code as a single escaped string>"}},
-  "run": "{spec.get("run", "python main.py")}",
-  "tools": []
-}}
-
-Escape all newlines as \\n inside the string value."""
-
-    try:
-        message = get_anthropic().messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=2048,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
-        raw = message.content[0].text
-        log.debug("builder raw: %s", raw[:300])
-
-        data = extract_json(raw)
-        if data and "files" in data:
-            return data
-    except Exception as e:
-        log.error("builder error: %s", e)
-
-    log.warning("bad builder output → fallback")
-    return fallback_code(goal)
+    return {"messages": [response], "iteration": iteration}
 
 
-# ================= CLAUDE — fixer ================= #
-def fixer(goal, previous_code, error):
-    system = (
-        "You are an expert Python debugger. "
-        "You fix broken Python scripts by addressing the exact error reported. "
-        "You always respond with ONLY a JSON object — no markdown, no prose, no explanation."
-    )
+def node_save(state: AgentState) -> dict:
+    # Determine success from last message (no tool calls = agent is done)
+    messages = state.get("messages", [])
+    last = messages[-1] if messages else None
 
-    user = f"""Fix the Python script below so it accomplishes the goal.
+    success = False
+    last_error = None
 
-Goal: {goal}
+    if last and hasattr(last, "tool_calls") and not last.tool_calls:
+        # No more tool calls — check content for error signals
+        content = getattr(last, "content", "") or ""
+        if isinstance(content, list):
+            content = " ".join(c.get("text", "") if isinstance(c, dict) else str(c) for c in content)
+        error_words = ("error", "fail", "traceback", "exception")
+        success = not any(w in content.lower() for w in error_words)
+        if not success:
+            last_error = content[:200]
 
-Previous code:
-```python
-{previous_code}
-```
-
-Error:
-{error}
-
-Return ONLY this JSON shape:
-{{
-  "files": {{"main.py": "<fixed python code as a single escaped string>"}},
-  "run": "python main.py",
-  "tools": []
-}}
-
-Fix only the specific error. Do not rewrite unrelated logic. Escape all newlines as \\n."""
-
-    try:
-        message = get_anthropic().messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=2048,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
-        raw = message.content[0].text
-        log.debug("fixer raw: %s", raw[:300])
-
-        data = extract_json(raw)
-        if data and "files" in data:
-            return data
-    except Exception as e:
-        log.error("fixer error: %s", e)
-
-    log.warning("bad fixer output → keeping previous code")
-    return {"files": {"main.py": previous_code}, "run": "python main.py", "tools": []}
-
-
-# ================= JSON ================= #
-def extract_json(text):
-    if not text:
-        return None
-
-    text = text.replace("```json", "").replace("```python", "").replace("```", "").strip()
-
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except Exception:
-            return None
-
-    return None
-
-
-# ================= FILE WRITE ================= #
-def write_files(files, task_dir):
-    os.makedirs(task_dir, exist_ok=True)
-    for name, content in files.items():
-        path = os.path.join(task_dir, name)
-        with open(path, "w") as f:
-            f.write(content)
-        log.info("wrote %s", path)
-
-
-# ================= EXEC ================= #
-def _apply_resource_limits():
-    try:
-        import resource
-
-        resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
-        resource.setrlimit(resource.RLIMIT_CPU, (CODE_TIMEOUT, CODE_TIMEOUT))
-        resource.setrlimit(resource.RLIMIT_NPROC, (32, 32))
-    except Exception:
-        pass
-
-
-def run_command(cmd, task_dir):
-    try:
-        args = shlex.split(cmd)
-    except ValueError:
-        return {"success": False, "stdout": "", "stderr": f"invalid command: {cmd}"}
-
-    try:
-        result = subprocess.run(
-            args,
-            shell=False,
-            cwd=task_dir,
-            capture_output=True,
-            text=True,
-            timeout=CODE_TIMEOUT,
-            preexec_fn=_apply_resource_limits,
-        )
-        return {
-            "success": result.returncode == 0,
-            "stdout": result.stdout.strip(),
-            "stderr": result.stderr.strip(),
-        }
-    except subprocess.TimeoutExpired:
-        return {"success": False, "stdout": "", "stderr": f"TimeoutExpired after {CODE_TIMEOUT}s"}
-    except Exception as e:
-        return {"success": False, "stdout": "", "stderr": str(e)}
-
-
-def fix_command(cmd, task_dir):
-    cmd = cmd.replace("<filename>", "test.txt")
-    test_file = os.path.join(task_dir, "test.txt")
-    if not os.path.exists(test_file):
-        with open(test_file, "w") as f:
-            f.write("line1\nline2\nline3\n")
-    return cmd
-
-
-# ================= FALLBACK ================= #
-def fallback_code(goal):
-    escaped = goal.replace('"', '\\"')
-    return {
-        "files": {
-            "main.py": f'if __name__ == "__main__":\n    print("Agent fallback for: {escaped}")\n'
-        },
-        "run": "python main.py",
-        "tools": [],
+    result = {
+        "success": success,
+        "stdout": "",
+        "stderr": last_error or "",
+        "iteration": state["iteration"],
     }
+    save_memory(state["goal"], result, success)
+
+    if success:
+        log.info("task=%s done after %d agent step(s)", state["task_id"], state["iteration"])
+    else:
+        log.warning("task=%s finished (success uncertain) after %d step(s)", state["task_id"], state["iteration"])
+
+    return {"success": success, "last_error": last_error}
 
 
-# ================= MAIN ================= #
-def run_workflow(goal, task_id=None, on_iteration=None):
+# ── Routing ────────────────────────────────────────────────────────────────────
+
+
+def route_agent(state: AgentState) -> str:
+    messages = state.get("messages", [])
+    last = messages[-1] if messages else None
+    if last and hasattr(last, "tool_calls") and last.tool_calls:
+        if state["iteration"] < MAX_ITERATIONS:
+            return "tools"
+    return "save"
+
+
+# ── Graph assembly ─────────────────────────────────────────────────────────────
+
+
+def _build_graph():
+    g = StateGraph(AgentState)
+
+    g.add_node("fetch_memory", node_fetch_memory)
+    g.add_node("agent", node_agent)
+    g.add_node("tools", ToolNode(ALL_TOOLS))
+    g.add_node("save", node_save)
+
+    g.set_entry_point("fetch_memory")
+    g.add_edge("fetch_memory", "agent")
+    g.add_conditional_edges(
+        "agent",
+        route_agent,
+        {"tools": "tools", "save": "save"},
+    )
+    g.add_edge("tools", "agent")
+    g.add_edge("save", END)
+
+    return g.compile()
+
+
+_graph = None
+
+
+def _get_graph():
+    global _graph
+    if _graph is None:
+        _graph = _build_graph()
+    return _graph
+
+
+# ── Public entry point ─────────────────────────────────────────────────────────
+
+
+def run_workflow(goal: str, task_id: str = None, on_iteration=None) -> dict:
     task_id = task_id or str(uuid.uuid4())
     task_dir = os.path.join(OUTPUT_DIR, task_id)
     os.makedirs(task_dir, exist_ok=True)
 
     log.info("starting task=%s goal=%r", task_id, goal)
 
-    final_result = {"success": False, "execution": {}, "iterations": 0}
-    current_code = None
+    initial: AgentState = {
+        "goal": goal,
+        "task_id": task_id,
+        "task_dir": task_dir,
+        "messages": [],
+        "memory_rows": [],
+        "success": False,
+        "last_error": None,
+        "iteration": 0,
+        "files_written": [],
+        "on_iteration": on_iteration,
+    }
 
-    memory = get_memory(goal)
-    log.info("task=%s memory_hits=%d", task_id, len(memory))
+    final = _get_graph().invoke(initial)
 
-    spec = planner(goal, memory)
-    log.info("task=%s spec=%r", task_id, spec.get("description"))
+    # Collect files written during execution
+    files_written = []
+    try:
+        files_written = os.listdir(task_dir)
+    except OSError:
+        pass
 
-    for i in range(MAX_ITERATIONS):
-        log.info("task=%s iteration=%d", task_id, i + 1)
-
-        if on_iteration:
-            on_iteration(i + 1, final_result.get("last_error"))
-
-        if i == 0 or current_code is None:
-            build = builder(spec, goal)
-        else:
-            build = fixer(goal, current_code, final_result.get("last_error", "unknown error"))
-
-        write_files(build["files"], task_dir)
-        current_code = build["files"].get("main.py", "")
-
-        cmd = fix_command(build.get("run", "python main.py"), task_dir)
-        execution = run_command(cmd, task_dir)
-
-        log.info(
-            "task=%s success=%s stdout=%r stderr=%r",
-            task_id,
-            execution["success"],
-            execution["stdout"][:80],
-            execution["stderr"][:80],
-        )
-
-        final_result = {
-            "success": execution["success"],
-            "execution": execution,
-            "iterations": i + 1,
-            "last_error": execution.get("stderr") or None,
-            "files_written": list(build["files"].keys()),
-            "task_dir": task_dir,
-        }
-
-        if execution["success"]:
-            log.info("task=%s done after %d iteration(s)", task_id, i + 1)
-            save_memory(goal, execution, True)
-            return final_result
-        else:
-            save_memory(goal, execution, False)
-
-    log.warning("task=%s exhausted retries", task_id)
-    return final_result
+    return {
+        "success": final["success"],
+        "execution": {
+            "success": final["success"],
+            "stdout": "",
+            "stderr": final.get("last_error") or "",
+        },
+        "iterations": final["iteration"],
+        "last_error": final.get("last_error"),
+        "files_written": files_written,
+        "task_dir": task_dir,
+    }
 
 
-# ================= ENTRY ================= #
+# ── Dev entrypoint ─────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     init_db()
     run_workflow("Create a Python CLI app that reads a file and prints line count")
