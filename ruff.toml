@@ -1,0 +1,16 @@
+target-version = "py312"
+line-length = 100
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E501",   # line too long – handled by formatter
+    "B008",   # function calls in default args (FastAPI depends)
+]
+
+[lint.per-file-ignores]
+"archon/*" = ["UP"]   # archon CLI targets Python 3.10+
+
+[format]
+quote-style = "double"
+indent-style = "space"

@@ -1,0 +1,25 @@
+# Production overlay – used by CI/CD.
+# Overrides `build: .` with the pre-built GHCR image.
+#
+# Usage:
+#   APP_IMAGE=ghcr.io/moiz-ali-moomin/archon-autonomous-workflows:sha-abc1234 \
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  api:
+    build: ~        # disable local build
+    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    restart: always
+    pull_policy: always
+
+  worker:
+    build: ~
+    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    restart: always
+    pull_policy: always
+
+  flower:
+    build: ~
+    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    restart: always
+    pull_policy: always

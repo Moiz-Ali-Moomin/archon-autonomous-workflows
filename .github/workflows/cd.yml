@@ -1,0 +1,148 @@
+name: CD – Build, Push & Deploy
+
+on:
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}   # moiz-ali-moomin/archon-autonomous-workflows
+
+jobs:
+  # ── 1. Build & push Docker image to GHCR ─────────────────────────────────
+  build-and-push:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+      image_digest: ${{ steps.push.outputs.digest }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Print image digest
+        run: echo "Pushed ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.push.outputs.digest }}"
+
+  # ── 2. Deploy to VPS via SSH ──────────────────────────────────────────────
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    environment: production    # requires manual approval gate (optional)
+
+    steps:
+      - name: Checkout code (for compose files)
+        uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT && secrets.VPS_PORT || '22' }}
+          script: |
+            set -euo pipefail
+
+            DEPLOY_DIR="${{ secrets.DEPLOY_DIR || '/opt/archon' }}"
+            REGISTRY="ghcr.io"
+            IMAGE="${REGISTRY}/${{ env.IMAGE_NAME }}"
+            TAG="sha-$(echo '${{ github.sha }}' | cut -c1-7)"
+
+            echo "==> Pulling latest compose files"
+            cd "$DEPLOY_DIR"
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "==> Logging in to GHCR"
+            echo "${{ secrets.GITHUB_TOKEN }}" | \
+              docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            echo "==> Pulling new image: ${IMAGE}:${TAG}"
+            APP_IMAGE="${IMAGE}:${TAG}" docker compose \
+              -f docker-compose.yml \
+              -f docker-compose.prod.yml \
+              pull api worker flower
+
+            echo "==> Restarting services with zero-downtime rolling update"
+            APP_IMAGE="${IMAGE}:${TAG}" docker compose \
+              -f docker-compose.yml \
+              -f docker-compose.prod.yml \
+              up -d --no-build --remove-orphans
+
+            echo "==> Waiting for api to be healthy"
+            for i in $(seq 1 24); do
+              STATUS=$(docker inspect --format='{{.State.Health.Status}}' \
+                       "$(docker compose ps -q api)" 2>/dev/null || echo "starting")
+              echo "  api health: $STATUS (attempt $i/24)"
+              [ "$STATUS" = "healthy" ] && break
+              [ $i -eq 24 ] && echo "ERROR: api never became healthy" && exit 1
+              sleep 5
+            done
+
+            echo "==> Pruning unused images"
+            docker image prune -f --filter "until=24h"
+
+            echo "==> Deploy complete  tag=${TAG}"
+
+  # ── 3. Post-deploy smoke test ─────────────────────────────────────────────
+  smoke-test:
+    name: Smoke Test
+    runs-on: ubuntu-latest
+    needs: deploy
+
+    steps:
+      - name: Health check endpoint
+        run: |
+          echo "Hitting /health on ${{ secrets.VPS_HOST }}"
+          RESPONSE=$(curl -sf \
+            -H "X-API-Key: ${{ secrets.AGENT_API_KEY }}" \
+            "https://${{ secrets.VPS_HOST }}/health")
+          echo "$RESPONSE"
+          echo "$RESPONSE" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          assert data['status'] == 'ok', f'Health not ok: {data}'
+          print('Health check PASSED')
+          "
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Smoke test failed after deploy – investigate ${{ secrets.VPS_HOST }}:8000"
