@@ -225,7 +225,10 @@ class ArchonREPL:
             if not line:
                 continue
 
-            if line.startswith("/"):
+            if line.lower() == "clear":
+                utils.clear_terminal()
+                ui.print_banner()
+            elif line.startswith("/"):
                 keep_running = self._handle_command(line)
                 if not keep_running:
                     break
