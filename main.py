@@ -14,6 +14,7 @@ from starlette.responses import JSONResponse
 from redis_client import get_task_state, set_task_state, get_redis
 from tasks import run_agent_task
 from db import check_db
+from workflow import gemma
 
 logging.basicConfig(
     level=logging.INFO,
@@ -85,6 +86,33 @@ class StatusResponse(BaseModel):
     stderr: str | None = None
     success: bool | None = None
     iterations: int | None = None
+
+
+class AskRequest(BaseModel):
+    question: str
+
+    @field_validator("question")
+    @classmethod
+    def question_not_empty(cls, v):
+        v = v.strip()
+        if not v:
+            raise ValueError("question must not be empty")
+        if len(v) > 1000:
+            raise ValueError("question must be under 1000 characters")
+        return v
+
+
+class AskResponse(BaseModel):
+    answer: str
+
+
+@app.post("/ask", response_model=AskResponse)
+@limiter.limit("20/minute")
+async def ask_gemma(request: Request, body: AskRequest, _key: str = Security(verify_api_key)):
+    answer = gemma(body.question)
+    if not answer:
+        raise HTTPException(status_code=503, detail="Gemma unavailable")
+    return AskResponse(answer=answer)
 
 
 @app.post("/run", response_model=RunResponse, status_code=202)
