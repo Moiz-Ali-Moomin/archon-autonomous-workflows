@@ -2,21 +2,16 @@ import logging
 import os
 import subprocess
 import sys
-import threading
+from typing import Annotated
 
-from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import InjectedToolArg, tool
 
 log = logging.getLogger("tools")
 
-_task_context = threading.local()
 
-
-def set_task_context(task_dir: str) -> None:
-    _task_context.task_dir = task_dir
-
-
-def _task_dir() -> str:
-    return getattr(_task_context, "task_dir", "/tmp/archon")
+def _get_task_dir(config: RunnableConfig) -> str:
+    return config.get("configurable", {}).get("task_dir", "/tmp/archon")
 
 
 @tool
@@ -30,8 +25,7 @@ def web_search(query: str) -> str:
         if not results:
             return "No results found."
         return "\n\n".join(
-            f"Title: {r['title']}\nURL: {r['href']}\nSnippet: {r['body']}"
-            for r in results
+            f"Title: {r['title']}\nURL: {r['href']}\nSnippet: {r['body']}" for r in results
         )
     except Exception as e:
         log.warning("web_search failed: %s", e)
@@ -39,9 +33,13 @@ def web_search(query: str) -> str:
 
 
 @tool
-def write_file(filename: str, content: str) -> str:
+def write_file(
+    filename: str,
+    content: str,
+    config: Annotated[RunnableConfig, InjectedToolArg],
+) -> str:
     """Write content to a file in the task directory."""
-    task_dir = _task_dir()
+    task_dir = _get_task_dir(config)
     os.makedirs(task_dir, exist_ok=True)
     safe_name = os.path.basename(filename)
     path = os.path.join(task_dir, safe_name)
@@ -55,9 +53,12 @@ def write_file(filename: str, content: str) -> str:
 
 
 @tool
-def read_file(filename: str) -> str:
+def read_file(
+    filename: str,
+    config: Annotated[RunnableConfig, InjectedToolArg],
+) -> str:
     """Read a file from the task directory."""
-    task_dir = _task_dir()
+    task_dir = _get_task_dir(config)
     safe_name = os.path.basename(filename)
     path = os.path.join(task_dir, safe_name)
     try:
@@ -68,9 +69,9 @@ def read_file(filename: str) -> str:
 
 
 @tool
-def list_files() -> str:
+def list_files(config: Annotated[RunnableConfig, InjectedToolArg]) -> str:
     """List all files in the task directory."""
-    task_dir = _task_dir()
+    task_dir = _get_task_dir(config)
     try:
         files = os.listdir(task_dir)
         return "\n".join(files) if files else "(empty)"
@@ -79,13 +80,17 @@ def list_files() -> str:
 
 
 @tool
-def run_python(filename: str = "main.py") -> str:
-    """Execute a Python file in the task directory. Returns stdout and stderr."""
-    task_dir = _task_dir()
+def run_python(
+    filename: str = "main.py",
+    *,
+    config: Annotated[RunnableConfig, InjectedToolArg],
+) -> str:
+    """Execute a Python file in the task directory. Returns stdout, stderr, and exit_code."""
+    task_dir = _get_task_dir(config)
     safe_name = os.path.basename(filename)
     path = os.path.join(task_dir, safe_name)
     if not os.path.exists(path):
-        return f"File not found: {safe_name}"
+        return f"File not found: {safe_name}\nexit_code: 1"
     try:
         result = subprocess.run(
             [sys.executable, safe_name],
@@ -102,9 +107,9 @@ def run_python(filename: str = "main.py") -> str:
         output.append(f"exit_code: {result.returncode}")
         return "\n".join(output)
     except subprocess.TimeoutExpired:
-        return "Error: execution timed out after 30s"
+        return "stderr:\nexecution timed out after 30s\nexit_code: 1"
     except Exception as e:
-        return f"Error running {safe_name}: {e}"
+        return f"stderr:\n{e}\nexit_code: 1"
 
 
 @tool

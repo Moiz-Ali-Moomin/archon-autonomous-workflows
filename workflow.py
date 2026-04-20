@@ -4,17 +4,16 @@ import os
 import uuid
 from typing import Annotated, Any, TypedDict
 
-import anthropic
 import psycopg2
 import requests
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
-from tools import ALL_TOOLS, set_task_context
+from tools import ALL_TOOLS
 
 load_dotenv()
 
@@ -39,15 +38,6 @@ DB_CONFIG = {
 
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "output")
 MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "10"))
-
-_anthropic_client = None
-
-
-def get_anthropic():
-    global _anthropic_client
-    if _anthropic_client is None:
-        _anthropic_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    return _anthropic_client
 
 
 # ── State ──────────────────────────────────────────────────────────────────────
@@ -177,6 +167,36 @@ def get_llm():
     return _llm
 
 
+# ── Success detection ──────────────────────────────────────────────────────────
+
+
+def _last_run_python_result(messages: list) -> tuple[bool | None, str | None]:
+    """Parse the last run_python ToolMessage for exit_code. Returns (success, error)."""
+    for msg in reversed(messages):
+        if not isinstance(msg, ToolMessage):
+            continue
+        if getattr(msg, "name", "") != "run_python":
+            continue
+        content = msg.content or ""
+        if "exit_code: 0" in content:
+            return True, None
+        # Extract stderr block
+        lines = content.splitlines()
+        stderr_lines: list[str] = []
+        in_stderr = False
+        for line in lines:
+            if line.startswith("stderr:"):
+                in_stderr = True
+                continue
+            if in_stderr and line.startswith("exit_code:"):
+                break
+            if in_stderr:
+                stderr_lines.append(line)
+        error = "\n".join(stderr_lines).strip()[:200] if stderr_lines else content[:200]
+        return False, error
+    return None, None  # agent never called run_python
+
+
 # ── LangGraph nodes ────────────────────────────────────────────────────────────
 
 
@@ -192,9 +212,6 @@ def node_agent(state: AgentState) -> dict:
     if state.get("on_iteration"):
         state["on_iteration"](iteration, state.get("last_error"))
 
-    set_task_context(state["task_dir"])
-
-    # Build system prompt
     memory_section = ""
     if state.get("memory_rows"):
         lines = [
@@ -203,7 +220,7 @@ def node_agent(state: AgentState) -> dict:
         ]
         memory_section = "\n\nPast similar tasks:\n" + "\n".join(lines)
 
-    system = (
+    system_content = (
         "You are an autonomous coding agent. "
         "Your task directory is available via tools — use write_file, run_python, "
         "web_search, read_file, list_files, and install_package to accomplish the goal. "
@@ -214,11 +231,16 @@ def node_agent(state: AgentState) -> dict:
     )
 
     messages = list(state["messages"])
+
+    # Inject SystemMessage + HumanMessage on first call only.
+    # Guard against double-inject if state is ever re-seeded.
     if not messages:
         messages = [
-            SystemMessage(content=system),
+            SystemMessage(content=system_content),
             HumanMessage(content=f"Goal: {state['goal']}"),
         ]
+    elif not isinstance(messages[0], SystemMessage):
+        messages = [SystemMessage(content=system_content)] + messages
 
     log.info("task=%s agent iteration=%d", state["task_id"], iteration)
     response = get_llm().invoke(messages)
@@ -227,22 +249,18 @@ def node_agent(state: AgentState) -> dict:
 
 
 def node_save(state: AgentState) -> dict:
-    # Determine success from last message (no tool calls = agent is done)
     messages = state.get("messages", [])
-    last = messages[-1] if messages else None
 
-    success = False
-    last_error = None
+    # Fix 2: parse actual exit_code from run_python tool results
+    ran_success, run_error = _last_run_python_result(messages)
 
-    if last and hasattr(last, "tool_calls") and not last.tool_calls:
-        # No more tool calls — check content for error signals
-        content = getattr(last, "content", "") or ""
-        if isinstance(content, list):
-            content = " ".join(c.get("text", "") if isinstance(c, dict) else str(c) for c in content)
-        error_words = ("error", "fail", "traceback", "exception")
-        success = not any(w in content.lower() for w in error_words)
-        if not success:
-            last_error = content[:200]
+    if ran_success is not None:
+        success = ran_success
+        last_error = run_error
+    else:
+        # Agent never ran code — treat as not successful
+        success = False
+        last_error = "Agent did not execute any code"
 
     result = {
         "success": success,
@@ -255,7 +273,12 @@ def node_save(state: AgentState) -> dict:
     if success:
         log.info("task=%s done after %d agent step(s)", state["task_id"], state["iteration"])
     else:
-        log.warning("task=%s finished (success uncertain) after %d step(s)", state["task_id"], state["iteration"])
+        log.warning(
+            "task=%s finished unsuccessfully after %d step(s): %s",
+            state["task_id"],
+            state["iteration"],
+            last_error,
+        )
 
     return {"success": success, "last_error": last_error}
 
@@ -329,9 +352,12 @@ def run_workflow(goal: str, task_id: str = None, on_iteration=None) -> dict:
         "on_iteration": on_iteration,
     }
 
-    final = _get_graph().invoke(initial)
+    # Fix 3: pass task_dir via RunnableConfig so ToolNode injects it per-invocation
+    final = _get_graph().invoke(
+        initial,
+        config={"configurable": {"task_dir": task_dir}},
+    )
 
-    # Collect files written during execution
     files_written = []
     try:
         files_written = os.listdir(task_dir)
