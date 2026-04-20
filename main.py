@@ -25,9 +25,9 @@ logging.basicConfig(
 log = logging.getLogger("api")
 
 MAX_GOAL_LENGTH = 500
-API_KEY         = os.environ["AGENT_API_KEY"]
-api_key_header  = APIKeyHeader(name="X-API-Key", auto_error=False)
-limiter         = Limiter(key_func=get_remote_address)
+API_KEY = os.environ["AGENT_API_KEY"]
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+limiter = Limiter(key_func=get_remote_address)
 
 
 def verify_api_key(key: str = Security(api_key_header)):

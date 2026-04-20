@@ -4,10 +4,10 @@ from contextlib import contextmanager
 import psycopg2
 
 DB_CONFIG = {
-    "host":            os.getenv("DB_HOST",     "localhost"),
-    "database":        os.getenv("DB_NAME",     "agent"),
-    "user":            os.getenv("DB_USER",     "agent_user"),
-    "password":        os.getenv("DB_PASSWORD", "agent_pass"),
+    "host": os.getenv("DB_HOST", "localhost"),
+    "database": os.getenv("DB_NAME", "agent"),
+    "user": os.getenv("DB_USER", "agent_user"),
+    "password": os.getenv("DB_PASSWORD", "agent_pass"),
     "connect_timeout": 5,
 }
 

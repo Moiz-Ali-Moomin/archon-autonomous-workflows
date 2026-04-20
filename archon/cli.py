@@ -24,12 +24,14 @@ try:
     from prompt_toolkit.history import FileHistory
     from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
     from prompt_toolkit.styles import Style as PTStyle
+
     _HAS_PROMPT_TOOLKIT = True
 except ImportError:
     _HAS_PROMPT_TOOLKIT = False
 
 
 # ── REPL ──────────────────────────────────────────────────────────────────────
+
 
 class ArchonREPL:
     def __init__(self) -> None:
@@ -109,10 +111,7 @@ class ArchonREPL:
                 if ui.set_theme(arg):
                     ui.success(f"Theme set to '{arg}'.")
                 else:
-                    ui.error(
-                        f"Unknown theme '{arg}'. "
-                        f"Available: {', '.join(ui.list_themes())}"
-                    )
+                    ui.error(f"Unknown theme '{arg}'. Available: {', '.join(ui.list_themes())}")
             return True
 
         # Unknown /command
@@ -140,9 +139,8 @@ class ArchonREPL:
             nonlocal last_seen_status
             if status.status != last_seen_status:
                 last_seen_status = status.status
-                task_desc = (
-                    f"[bold]{status.status.upper()}[/bold]"
-                    + (f"  iteration {status.iteration}" if status.iteration else "")
+                task_desc = f"[bold]{status.status.upper()}[/bold]" + (
+                    f"  iteration {status.iteration}" if status.iteration else ""
                 )
                 spinner_task.description = task_desc  # type: ignore[attr-defined]
                 ui.print_status_update(status)
@@ -236,6 +234,7 @@ class ArchonREPL:
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     try:

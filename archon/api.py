@@ -38,8 +38,7 @@ class TaskStatus:
 def _headers() -> dict[str, str]:
     if not config.API_KEY:
         raise ArchonAPIError(
-            "API key not set. Export ARCHON_API_KEY or AGENT_API_KEY, "
-            "or add it to your .env file."
+            "API key not set. Export ARCHON_API_KEY or AGENT_API_KEY, or add it to your .env file."
         )
     return {"X-API-Key": config.API_KEY, "Content-Type": "application/json"}
 
@@ -58,7 +57,9 @@ def run_task(goal: str) -> str:
             timeout=config.REQUEST_TIMEOUT,
         )
     except ConnectionError as exc:
-        raise ArchonAPIError(f"Cannot reach backend at {config.API_URL}. Is the server running?") from exc
+        raise ArchonAPIError(
+            f"Cannot reach backend at {config.API_URL}. Is the server running?"
+        ) from exc
     except Timeout as exc:
         raise ArchonAPIError(f"Request timed out after {config.REQUEST_TIMEOUT}s.") from exc
     except RequestException as exc:

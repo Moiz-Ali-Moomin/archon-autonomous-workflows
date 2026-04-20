@@ -21,6 +21,7 @@ console = Console()
 
 # ── Theme helper ─────────────────────────────────────────────────────────────
 
+
 def _t(key: str) -> str:
     """Return the colour/style for the active theme + key."""
     theme = config.THEMES.get(config.ACTIVE_THEME, config.THEMES["default"])
@@ -47,6 +48,7 @@ BANNER = r"""
 /_/ |_|/_/  \__/_//_/\___/_//_/
 """
 
+
 def print_banner() -> None:
     text = Text(BANNER, style=_t("banner"), justify="left")
     console.print(text)
@@ -68,6 +70,7 @@ def print_separator(char: str = "─") -> None:
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
+
 def get_prompt() -> str:
     """Return the styled prompt string (used by prompt_toolkit / input())."""
     return "archon > "
@@ -76,11 +79,11 @@ def get_prompt() -> str:
 # ── Status helpers ────────────────────────────────────────────────────────────
 
 _STATUS_ICONS = {
-    "queued":  ("⏳", "queued"),
+    "queued": ("⏳", "queued"),
     "running": ("⚙ ", "running"),
     "success": ("✓ ", "success"),
     "failure": ("✗ ", "failure"),
-    "error":   ("✗ ", "failure"),
+    "error": ("✗ ", "failure"),
     "unknown": ("?  ", "info"),
 }
 
@@ -99,6 +102,7 @@ def status_text(status: str) -> Text:
 
 # ── Spinner / live polling ────────────────────────────────────────────────────
 
+
 def make_spinner(task_id: str) -> Progress:
     return Progress(
         SpinnerColumn(style=_t("running")),
@@ -110,6 +114,7 @@ def make_spinner(task_id: str) -> Progress:
 
 
 # ── Task result panel ─────────────────────────────────────────────────────────
+
 
 def print_task_result(status) -> None:
     """Render a rich Panel with the final task result."""
@@ -149,8 +154,8 @@ def print_task_result(status) -> None:
 
     from rich.console import Group
 
-    panel_content = Group(*content_parts) if content_parts else Text(
-        "No output captured.", style=_t("info")
+    panel_content = (
+        Group(*content_parts) if content_parts else Text("No output captured.", style=_t("info"))
     )
 
     console.print(
@@ -195,6 +200,7 @@ def _render_output_block(label: str, text: str, error: bool = False) -> Panel:
 
 # ── Help table ────────────────────────────────────────────────────────────────
 
+
 def print_help() -> None:
     print_separator()
     table = Table(
@@ -208,14 +214,14 @@ def print_help() -> None:
     table.add_column("Description", style=_t("output"))
 
     commands = [
-        ("/help",               "Show this help message"),
+        ("/help", "Show this help message"),
         ("/exit  [dim]or /quit[/dim]", "Exit Archon"),
-        ("/clear",              "Clear the terminal"),
-        ("/status <task_id>",   "Check the status of a task manually"),
-        ("/history",            "Show session command history"),
-        ("/health",             "Ping the backend health endpoint"),
-        ("/theme <name>",       f"Switch theme  ({', '.join(list_themes())})"),
-        ("  <any text>",        "Submit a natural language goal to the agent"),
+        ("/clear", "Clear the terminal"),
+        ("/status <task_id>", "Check the status of a task manually"),
+        ("/history", "Show session command history"),
+        ("/health", "Ping the backend health endpoint"),
+        ("/theme <name>", f"Switch theme  ({', '.join(list_themes())})"),
+        ("  <any text>", "Submit a natural language goal to the agent"),
     ]
 
     for cmd, desc in commands:
@@ -226,6 +232,7 @@ def print_help() -> None:
 
 
 # ── Inline status update (used during polling) ────────────────────────────────
+
 
 def print_status_update(status) -> None:
     """Single-line status update printed inside the spinner loop."""
@@ -240,6 +247,7 @@ def print_status_update(status) -> None:
 
 
 # ── Simple message helpers ────────────────────────────────────────────────────
+
 
 def info(msg: str) -> None:
     console.print(f"  [{_t('info')}]{msg}[/{_t('info')}]")
@@ -258,13 +266,11 @@ def warn(msg: str) -> None:
 
 
 def print_task_id(task_id: str) -> None:
-    console.print(
-        f"\n  [{_t('info')}]Task queued →[/{_t('info')}] "
-        f"[bold]{task_id}[/bold]\n"
-    )
+    console.print(f"\n  [{_t('info')}]Task queued →[/{_t('info')}] [bold]{task_id}[/bold]\n")
 
 
 # ── Health display ────────────────────────────────────────────────────────────
+
 
 def print_health(data: dict) -> None:
     print_separator()
@@ -272,8 +278,13 @@ def print_health(data: dict) -> None:
     icon = "✓" if overall == "ok" else "⚠"
     style = _t("success") if overall == "ok" else _t("failure")
 
-    table = Table(box=box.ROUNDED, border_style=_t("separator"), show_header=True,
-                  header_style=_t("banner"), title=f"[{style}]{icon} Backend Health[/{style}]")
+    table = Table(
+        box=box.ROUNDED,
+        border_style=_t("separator"),
+        show_header=True,
+        header_style=_t("banner"),
+        title=f"[{style}]{icon} Backend Health[/{style}]",
+    )
     table.add_column("Service", style=_t("cmd"), no_wrap=True)
     table.add_column("Status", style=_t("output"))
 
@@ -286,6 +297,7 @@ def print_health(data: dict) -> None:
 
 
 # ── History display ───────────────────────────────────────────────────────────
+
 
 def print_history(entries: list[str]) -> None:
     print_separator()

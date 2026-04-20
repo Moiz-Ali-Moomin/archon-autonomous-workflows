@@ -20,36 +20,37 @@ logging.basicConfig(
 log = logging.getLogger("workflow")
 
 # ================= CONFIG ================= #
-_OLLAMA_BASE    = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-OLLAMA_URL      = f"{_OLLAMA_BASE}/api/generate"
-EMBED_URL       = f"{_OLLAMA_BASE}/api/embeddings"
+_OLLAMA_BASE = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+OLLAMA_URL = f"{_OLLAMA_BASE}/api/generate"
+EMBED_URL = f"{_OLLAMA_BASE}/api/embeddings"
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
 DB_CONFIG = {
-    "host":            os.getenv("DB_HOST",     "localhost"),
-    "database":        os.getenv("DB_NAME",     "agent"),
-    "user":            os.getenv("DB_USER",     "agent_user"),
-    "password":        os.getenv("DB_PASSWORD", "agent_pass"),
+    "host": os.getenv("DB_HOST", "localhost"),
+    "database": os.getenv("DB_NAME", "agent"),
+    "user": os.getenv("DB_USER", "agent_user"),
+    "password": os.getenv("DB_PASSWORD", "agent_pass"),
     "connect_timeout": 5,
 }
 
-OUTPUT_DIR     = os.getenv("OUTPUT_DIR", "output")
-CODE_TIMEOUT   = int(os.getenv("CODE_TIMEOUT", "30"))
+OUTPUT_DIR = os.getenv("OUTPUT_DIR", "output")
+CODE_TIMEOUT = int(os.getenv("CODE_TIMEOUT", "30"))
 MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "3"))
 
 _anthropic_client = None
 
+
 def get_anthropic():
     global _anthropic_client
     if _anthropic_client is None:
-        _anthropic_client = anthropic.Anthropic(
-            api_key=os.environ["ANTHROPIC_API_KEY"]
-        )
+        _anthropic_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     return _anthropic_client
+
 
 # ================= DB ================= #
 def get_conn():
     return psycopg2.connect(**DB_CONFIG)
+
 
 def init_db():
     conn = get_conn()
@@ -69,21 +70,23 @@ def init_db():
     conn.close()
     log.info("DB schema ready")
 
+
 # ================= EMBEDDING ================= #
 def embed(text):
     try:
-        res = requests.post(EMBED_URL, json={
-            "model": "nomic-embed-text",
-            "prompt": text
-        }, timeout=30)
+        res = requests.post(
+            EMBED_URL, json={"model": "nomic-embed-text", "prompt": text}, timeout=30
+        )
         return res.json()["embedding"]
     except Exception as e:
         log.warning("embed failed: %s", e)
         return [0.0] * 768
 
+
 def embed_vector_str(text):
     vec = embed(text)
     return "[" + ",".join(map(str, vec)) + "]"
+
 
 # ================= MEMORY ================= #
 def save_memory(goal, result, success):
@@ -95,12 +98,13 @@ def save_memory(goal, result, success):
             INSERT INTO memory (goal, result, success, embedding)
             VALUES (%s, %s, %s, %s::vector)
             """,
-            (goal, json.dumps(result), success, embed_vector_str(goal))
+            (goal, json.dumps(result), success, embed_vector_str(goal)),
         )
         conn.commit()
         conn.close()
     except Exception as e:
         log.error("save_memory failed: %s", e)
+
 
 def get_memory(goal):
     try:
@@ -113,7 +117,7 @@ def get_memory(goal):
             ORDER BY embedding <=> %s::vector
             LIMIT 3;
             """,
-            (embed_vector_str(goal),)
+            (embed_vector_str(goal),),
         )
         rows = cur.fetchall()
         conn.close()
@@ -122,18 +126,18 @@ def get_memory(goal):
         log.warning("get_memory failed: %s", e)
         return []
 
+
 # ================= GEMMA — chat ================= #
 def ask_gemma(question):
     try:
-        r = requests.post(OLLAMA_URL, json={
-            "model": "gemma:2b",
-            "prompt": question,
-            "stream": False
-        }, timeout=120)
+        r = requests.post(
+            OLLAMA_URL, json={"model": "gemma:2b", "prompt": question, "stream": False}, timeout=120
+        )
         return r.json().get("response", "")
     except Exception as e:
         log.error("ask_gemma error: %s", e)
         return ""
+
 
 # ================= GEMMA — planner ================= #
 def planner(goal, memory_rows):
@@ -162,11 +166,9 @@ Return a JSON object with this exact shape:
 JSON:"""
 
     try:
-        r = requests.post(OLLAMA_URL, json={
-            "model": "gemma:2b",
-            "prompt": prompt,
-            "stream": False
-        }, timeout=120)
+        r = requests.post(
+            OLLAMA_URL, json={"model": "gemma:2b", "prompt": prompt, "stream": False}, timeout=120
+        )
         raw = r.json().get("response", "")
         log.debug("planner raw: %s", raw[:300])
 
@@ -208,6 +210,7 @@ def _spec_is_confident(spec, goal):
     if len(goal_words & desc_words) == 0 and len(goal_words) > 2:
         return False
     return True
+
 
 # ================= CLAUDE — builder ================= #
 def builder(spec, goal):
@@ -254,6 +257,7 @@ Escape all newlines as \\n inside the string value."""
 
     log.warning("bad builder output → fallback")
     return fallback_code(goal)
+
 
 # ================= CLAUDE — fixer ================= #
 def fixer(goal, previous_code, error):
@@ -303,6 +307,7 @@ Fix only the specific error. Do not rewrite unrelated logic. Escape all newlines
     log.warning("bad fixer output → keeping previous code")
     return {"files": {"main.py": previous_code}, "run": "python main.py", "tools": []}
 
+
 # ================= JSON ================= #
 def extract_json(text):
     if not text:
@@ -324,6 +329,7 @@ def extract_json(text):
 
     return None
 
+
 # ================= FILE WRITE ================= #
 def write_files(files, task_dir):
     os.makedirs(task_dir, exist_ok=True)
@@ -333,15 +339,18 @@ def write_files(files, task_dir):
             f.write(content)
         log.info("wrote %s", path)
 
+
 # ================= EXEC ================= #
 def _apply_resource_limits():
     try:
         import resource
-        resource.setrlimit(resource.RLIMIT_AS,   (256 * 1024 * 1024, 256 * 1024 * 1024))
-        resource.setrlimit(resource.RLIMIT_CPU,  (CODE_TIMEOUT, CODE_TIMEOUT))
+
+        resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
+        resource.setrlimit(resource.RLIMIT_CPU, (CODE_TIMEOUT, CODE_TIMEOUT))
         resource.setrlimit(resource.RLIMIT_NPROC, (32, 32))
     except Exception:
         pass
+
 
 def run_command(cmd, task_dir):
     try:
@@ -369,6 +378,7 @@ def run_command(cmd, task_dir):
     except Exception as e:
         return {"success": False, "stdout": "", "stderr": str(e)}
 
+
 def fix_command(cmd, task_dir):
     cmd = cmd.replace("<filename>", "test.txt")
     test_file = os.path.join(task_dir, "test.txt")
@@ -376,6 +386,7 @@ def fix_command(cmd, task_dir):
         with open(test_file, "w") as f:
             f.write("line1\nline2\nline3\n")
     return cmd
+
 
 # ================= FALLBACK ================= #
 def fallback_code(goal):
@@ -385,8 +396,9 @@ def fallback_code(goal):
             "main.py": f'if __name__ == "__main__":\n    print("Agent fallback for: {escaped}")\n'
         },
         "run": "python main.py",
-        "tools": []
+        "tools": [],
     }
+
 
 # ================= MAIN ================= #
 def run_workflow(goal, task_id=None, on_iteration=None):
@@ -422,9 +434,13 @@ def run_workflow(goal, task_id=None, on_iteration=None):
         cmd = fix_command(build.get("run", "python main.py"), task_dir)
         execution = run_command(cmd, task_dir)
 
-        log.info("task=%s success=%s stdout=%r stderr=%r",
-                 task_id, execution["success"],
-                 execution["stdout"][:80], execution["stderr"][:80])
+        log.info(
+            "task=%s success=%s stdout=%r stderr=%r",
+            task_id,
+            execution["success"],
+            execution["stdout"][:80],
+            execution["stderr"][:80],
+        )
 
         final_result = {
             "success": execution["success"],
@@ -444,6 +460,7 @@ def run_workflow(goal, task_id=None, on_iteration=None):
 
     log.warning("task=%s exhausted retries", task_id)
     return final_result
+
 
 # ================= ENTRY ================= #
 if __name__ == "__main__":
