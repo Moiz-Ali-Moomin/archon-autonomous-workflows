@@ -2,14 +2,15 @@ import json
 import logging
 import os
 import uuid
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, TypedDict
 
 import psycopg2
 import requests
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langgraph.graph import END, StateGraph
+from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
@@ -40,6 +41,13 @@ OUTPUT_DIR = os.getenv("OUTPUT_DIR", "output")
 MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "10"))
 
 
+def _pg_conn_string() -> str:
+    return (
+        f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}"
+        f"@{DB_CONFIG['host']}/{DB_CONFIG['database']}"
+    )
+
+
 # ── State ──────────────────────────────────────────────────────────────────────
 
 
@@ -53,7 +61,6 @@ class AgentState(TypedDict):
     last_error: str | None
     iteration: int
     files_written: list
-    on_iteration: Any | None  # progress callback – not serialized
 
 
 # ── DB ─────────────────────────────────────────────────────────────────────────
@@ -180,7 +187,6 @@ def _last_run_python_result(messages: list) -> tuple[bool | None, str | None]:
         content = msg.content or ""
         if "exit_code: 0" in content:
             return True, None
-        # Extract stderr block
         lines = content.splitlines()
         stderr_lines: list[str] = []
         in_stderr = False
@@ -194,7 +200,7 @@ def _last_run_python_result(messages: list) -> tuple[bool | None, str | None]:
                 stderr_lines.append(line)
         error = "\n".join(stderr_lines).strip()[:200] if stderr_lines else content[:200]
         return False, error
-    return None, None  # agent never called run_python
+    return None, None
 
 
 # ── LangGraph nodes ────────────────────────────────────────────────────────────
@@ -208,9 +214,6 @@ def node_fetch_memory(state: AgentState) -> dict:
 
 def node_agent(state: AgentState) -> dict:
     iteration = state["iteration"] + 1
-
-    if state.get("on_iteration"):
-        state["on_iteration"](iteration, state.get("last_error"))
 
     memory_section = ""
     if state.get("memory_rows"):
@@ -232,8 +235,6 @@ def node_agent(state: AgentState) -> dict:
 
     messages = list(state["messages"])
 
-    # Inject SystemMessage + HumanMessage on first call only.
-    # Guard against double-inject if state is ever re-seeded.
     if not messages:
         messages = [
             SystemMessage(content=system_content),
@@ -251,14 +252,12 @@ def node_agent(state: AgentState) -> dict:
 def node_save(state: AgentState) -> dict:
     messages = state.get("messages", [])
 
-    # Fix 2: parse actual exit_code from run_python tool results
     ran_success, run_error = _last_run_python_result(messages)
 
     if ran_success is not None:
         success = ran_success
         last_error = run_error
     else:
-        # Agent never ran code — treat as not successful
         success = False
         last_error = "Agent did not execute any code"
 
@@ -298,7 +297,7 @@ def route_agent(state: AgentState) -> str:
 # ── Graph assembly ─────────────────────────────────────────────────────────────
 
 
-def _build_graph():
+def _build_graph(checkpointer):
     g = StateGraph(AgentState)
 
     g.add_node("fetch_memory", node_fetch_memory)
@@ -306,7 +305,7 @@ def _build_graph():
     g.add_node("tools", ToolNode(ALL_TOOLS))
     g.add_node("save", node_save)
 
-    g.set_entry_point("fetch_memory")
+    g.add_edge(START, "fetch_memory")
     g.add_edge("fetch_memory", "agent")
     g.add_conditional_edges(
         "agent",
@@ -316,16 +315,20 @@ def _build_graph():
     g.add_edge("tools", "agent")
     g.add_edge("save", END)
 
-    return g.compile()
+    return g.compile(checkpointer=checkpointer)
 
 
 _graph = None
+_checkpointer = None
 
 
 def _get_graph():
-    global _graph
+    global _graph, _checkpointer
     if _graph is None:
-        _graph = _build_graph()
+        _checkpointer = PostgresSaver.from_conn_string(_pg_conn_string())
+        _checkpointer.setup()
+        log.info("checkpoint store ready")
+        _graph = _build_graph(_checkpointer)
     return _graph
 
 
@@ -349,14 +352,30 @@ def run_workflow(goal: str, task_id: str = None, on_iteration=None) -> dict:
         "last_error": None,
         "iteration": 0,
         "files_written": [],
-        "on_iteration": on_iteration,
     }
 
-    # Fix 3: pass task_dir via RunnableConfig so ToolNode injects it per-invocation
-    final = _get_graph().invoke(
-        initial,
-        config={"configurable": {"task_dir": task_dir}},
-    )
+    # thread_id scopes the checkpoint to this task run
+    run_config = {
+        "configurable": {
+            "thread_id": task_id,
+            "task_dir": task_dir,
+        }
+    }
+
+    graph = _get_graph()
+    last_iteration = 0
+
+    # Stream node-level updates — call on_iteration as each agent step completes
+    for event in graph.stream(initial, config=run_config, stream_mode="updates"):
+        for node_name, updates in event.items():
+            if node_name == "agent":
+                new_iter = updates.get("iteration", last_iteration)
+                if on_iteration and new_iter > last_iteration:
+                    on_iteration(new_iter, updates.get("last_error"))
+                last_iteration = new_iter
+
+    # Read final state from checkpointer (complete, not partial)
+    final = graph.get_state(run_config).values
 
     files_written = []
     try:
@@ -365,13 +384,13 @@ def run_workflow(goal: str, task_id: str = None, on_iteration=None) -> dict:
         pass
 
     return {
-        "success": final["success"],
+        "success": final.get("success", False),
         "execution": {
-            "success": final["success"],
+            "success": final.get("success", False),
             "stdout": "",
             "stderr": final.get("last_error") or "",
         },
-        "iterations": final["iteration"],
+        "iterations": final.get("iteration", 0),
         "last_error": final.get("last_error"),
         "files_written": files_written,
         "task_dir": task_dir,
