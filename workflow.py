@@ -236,12 +236,12 @@ def node_agent(state: AgentState) -> Command[Literal["tools", "save", "agent"]]:
     response = get_llm().invoke(messages)
 
     log.info(f"LLM Response (iteration {iteration}): {response.content}")
-    
+
     tool_calls = getattr(response, "tool_calls", [])
     log.info(f"Extracted tool calls: {tool_calls}")
 
     has_tool_calls = bool(tool_calls)
-    
+
     # Fallback: force retry if no tools were called
     if not has_tool_calls and iteration < MAX_ITERATIONS:
         log.warning(f"Agent failed to output tool calls on iteration {iteration}. Forcing retry.")
@@ -254,7 +254,7 @@ def node_agent(state: AgentState) -> Command[Literal["tools", "save", "agent"]]:
             update={"messages": [response, retry_msg], "iteration": iteration},
             goto="agent"
         )
-        
+
     goto = "tools" if has_tool_calls and iteration < MAX_ITERATIONS else "save"
 
     return Command(update={"messages": [response], "iteration": iteration}, goto=goto)
@@ -346,7 +346,7 @@ def run_workflow(goal: str, task_id: str = None, on_iteration=None) -> dict:
         "recursion_limit": MAX_ITERATIONS * 3 + 10
     }
 
-    for event in graph.stream(initial, config):
+    for _event in graph.stream(initial, config):
         if on_iteration:
             current_state = graph.get_state(config).values
             on_iteration(
