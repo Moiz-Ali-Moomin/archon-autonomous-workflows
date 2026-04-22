@@ -28,6 +28,7 @@ try:
 except ImportError:
     _HAS_PROMPT_TOOLKIT = False
 
+
 class ArchonREPL:
     def __init__(self) -> None:
         self.history = utils.SessionHistory()
@@ -111,8 +112,10 @@ class ArchonREPL:
 
             self._do_goal(line)
 
+
 def main() -> None:
     ArchonREPL().run()
+
 
 if __name__ == "__main__":
     main()
