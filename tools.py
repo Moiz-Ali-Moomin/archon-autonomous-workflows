@@ -11,7 +11,7 @@ log = logging.getLogger("tools")
 
 
 def _get_task_dir(config: RunnableConfig) -> str:
-    return config.get("configurable", {}).get("task_dir", "/tmp/archon")
+    return config.get("configurable", {}).get("task_dir", "/app/output")
 
 
 @tool
@@ -105,6 +105,7 @@ def run_python(
         if result.stderr.strip():
             output.append(f"stderr:\n{result.stderr.strip()}")
         output.append(f"exit_code: {result.returncode}")
+        log.info(f"run_python stdout:\n{result.stdout.strip()}")
         return "\n".join(output)
     except subprocess.TimeoutExpired:
         return "stderr:\nexecution timed out after 30s\nexit_code: 1"

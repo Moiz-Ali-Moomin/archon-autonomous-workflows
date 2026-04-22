@@ -342,7 +342,7 @@ def run_workflow(goal: str, task_id: str = None, on_iteration=None) -> dict:
 
     graph = _get_graph()
     config = {
-        "configurable": {"thread_id": task_id},
+        "configurable": {"thread_id": task_id, "task_dir": task_dir},
         "recursion_limit": MAX_ITERATIONS * 3 + 10,
     }
 
@@ -356,10 +356,31 @@ def run_workflow(goal: str, task_id: str = None, on_iteration=None) -> dict:
 
     final = graph.get_state(config).values
 
+    execution = {}
+    for msg in reversed(final.get("messages", [])):
+        if getattr(msg, "name", "") == "run_python":
+            content = msg.content or ""
+            stdout_part = ""
+            stderr_part = ""
+            if "stdout:\n" in content:
+                stdout_part = content.split("stdout:\n")[1].split("stderr:\n")[0].split("exit_code:")[0].strip()
+            if "stderr:\n" in content:
+                stderr_part = content.split("stderr:\n")[1].split("exit_code:")[0].strip()
+            execution = {"stdout": stdout_part, "stderr": stderr_part}
+            break
+
+    if not execution:
+        # Fallback to last LLM response if no tools were used
+        for msg in reversed(final.get("messages", [])):
+            if getattr(msg, "type", "") == "ai" and getattr(msg, "content", ""):
+                execution = {"stdout": msg.content, "stderr": ""}
+                break
+
     return {
         "success": final.get("success", False),
         "iterations": final.get("iteration", 0),
         "last_error": final.get("last_error"),
+        "execution": execution,
     }
 
 

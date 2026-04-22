@@ -92,7 +92,7 @@ services:
     depends_on:
       <<: *app-depends
     volumes:
-      - output_data:/app/output
+      - ./output:/app/output
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 15s
@@ -111,7 +111,7 @@ services:
     depends_on:
       <<: *app-depends
     volumes:
-      - output_data:/app/output
+      - ./output:/app/output
     deploy:
       resources:
         limits:
@@ -136,4 +136,3 @@ volumes:
   redis_data:
   neo4j_data:
   ollama_data:
-  output_data:
