@@ -167,11 +167,11 @@ class ArchonREPL:
 
         # 3. Display result
         ui.print_task_result(final)
-        
+
         output_text = final.stdout or final.stderr or "No output"
         if len(output_text) > 1000:
             output_text = output_text[:1000] + "\n... [truncated]"
-            
+
         print(f"\nFinal Output:\n{output_text}\n")
 
         # 4. Save output
