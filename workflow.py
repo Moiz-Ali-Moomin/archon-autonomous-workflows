@@ -218,7 +218,7 @@ def node_fetch_memory(state: AgentState) -> dict:
     return {"memory_rows": rows}
 
 
-def node_agent(state: AgentState) -> Command[Literal["tools", "save"]]:
+def node_agent(state: AgentState) -> Command[Literal["tools", "save", "agent"]]:
     iteration = state["iteration"] + 1
 
     prior = [m for m in state["messages"] if not isinstance(m, SystemMessage)]
@@ -227,17 +227,34 @@ def node_agent(state: AgentState) -> Command[Literal["tools", "save"]]:
 
     system_prompt = (
         "You are an autonomous coding agent.\n"
-        "You MUST use the provided tools to write and execute code.\n"
-        "Do NOT just reply with code in plain text.\n"
-        "You must run the code to verify it works successfully."
+        "You MUST ALWAYS use the provided tools to write and execute code.\n"
+        "NEVER reply with conversational plain text.\n"
+        "You must run the Python code using the run_python tool to verify it works."
     )
     messages = [SystemMessage(content=system_prompt)] + prior
 
     response = get_llm().invoke(messages)
 
     log.info(f"LLM Response (iteration {iteration}): {response.content}")
+    
+    tool_calls = getattr(response, "tool_calls", [])
+    log.info(f"Extracted tool calls: {tool_calls}")
 
-    has_tool_calls = bool(getattr(response, "tool_calls", None))
+    has_tool_calls = bool(tool_calls)
+    
+    # Fallback: force retry if no tools were called
+    if not has_tool_calls and iteration < MAX_ITERATIONS:
+        log.warning(f"Agent failed to output tool calls on iteration {iteration}. Forcing retry.")
+        retry_msg = HumanMessage(
+            content="You did not use any tools. You MUST use a tool to accomplish the task. "
+                    "Do not reply with plain text."
+        )
+        # Route back to itself within the same workflow to try again
+        return Command(
+            update={"messages": [response, retry_msg], "iteration": iteration},
+            goto="agent"
+        )
+        
     goto = "tools" if has_tool_calls and iteration < MAX_ITERATIONS else "save"
 
     return Command(update={"messages": [response], "iteration": iteration}, goto=goto)
@@ -326,7 +343,7 @@ def run_workflow(goal: str, task_id: str = None, on_iteration=None) -> dict:
     graph = _get_graph()
     config = {
         "configurable": {"thread_id": task_id},
-        "recursion_limit": MAX_ITERATIONS * 2 + 5
+        "recursion_limit": MAX_ITERATIONS * 3 + 10
     }
 
     for event in graph.stream(initial, config):
