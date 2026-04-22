@@ -309,11 +309,12 @@ def run_workflow(goal: str, task_id: str = None, on_iteration=None) -> dict:
     }
 
     graph = _get_graph()
+    config = {"configurable": {"thread_id": task_id}}
 
-    for _ in graph.stream(initial):
+    for _ in graph.stream(initial, config):
         pass
 
-    final = graph.get_state({}).values
+    final = graph.get_state(config).values
 
     return {
         "success": final.get("success", False),
