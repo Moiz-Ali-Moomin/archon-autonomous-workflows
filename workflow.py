@@ -244,9 +244,7 @@ def node_agent(state: AgentState) -> Command[Literal["tools", "save", "agent"]]:
 
     # Fallback: force retry if no tools were called
     if not has_tool_calls and iteration < MAX_ITERATIONS:
-        log.warning(
-            f"Agent failed to output tool calls on iteration {iteration}. Forcing retry."
-        )
+        log.warning(f"Agent failed to output tool calls on iteration {iteration}. Forcing retry.")
         retry_msg = HumanMessage(
             content="You did not use any tools. You MUST use a tool to accomplish the task. "
             "Do not reply with plain text."
