@@ -143,7 +143,7 @@ def get_memory(goal):
         return []
 
 
-# ── Gemma chat (used by /ask endpoint) ────────────────────────────────────────
+# ── Gemma chat ────────────────────────────────────────────────────────────────
 
 
 def ask_gemma(question):
@@ -183,7 +183,6 @@ def get_llm():
 
 
 def _last_run_python_result(messages: list) -> tuple[bool | None, str | None]:
-    """Parse the last run_python ToolMessage for exit_code. Returns (success, error)."""
     for msg in reversed(messages):
         if not isinstance(msg, ToolMessage):
             continue
@@ -192,8 +191,9 @@ def _last_run_python_result(messages: list) -> tuple[bool | None, str | None]:
         content = msg.content or ""
         if "exit_code: 0" in content:
             return True, None
+
         lines = content.splitlines()
-        stderr_lines: list[str] = []
+        stderr_lines = []
         in_stderr = False
         for line in lines:
             if line.startswith("stderr:"):
@@ -203,8 +203,10 @@ def _last_run_python_result(messages: list) -> tuple[bool | None, str | None]:
                 break
             if in_stderr:
                 stderr_lines.append(line)
+
         error = "\n".join(stderr_lines).strip()[:200] if stderr_lines else content[:200]
         return False, error
+
     return None, None
 
 
@@ -213,79 +215,34 @@ def _last_run_python_result(messages: list) -> tuple[bool | None, str | None]:
 
 def node_fetch_memory(state: AgentState) -> dict:
     rows = get_memory(state["goal"])
-    log.info("task=%s memory_hits=%d", state["task_id"], len(rows))
     return {"memory_rows": rows}
 
 
 def node_agent(state: AgentState) -> Command[Literal["tools", "save"]]:
     iteration = state["iteration"] + 1
 
-    memory_section = ""
-    if state.get("memory_rows"):
-        lines = [
-            f"- Goal: {g} | Status: {'succeeded' if s else 'failed'}"
-            for g, _, s in state["memory_rows"]
-        ]
-        memory_section = "\n\nPast similar tasks:\n" + "\n".join(lines)
-
-    system_content = (
-        "You are an autonomous coding agent. "
-        "Your task directory is available via tools — use write_file, run_python, "
-        "web_search, read_file, list_files, and install_package to accomplish the goal. "
-        "Always write code to main.py, then run it. "
-        "If there is an error, fix it and run again. "
-        "When the goal is complete and the code runs successfully, stop calling tools."
-        + memory_section
-    )
-
-    # Always rebuild with a fresh SystemMessage; preserve all non-system history.
     prior = [m for m in state["messages"] if not isinstance(m, SystemMessage)]
     if not prior:
         prior = [HumanMessage(content=f"Goal: {state['goal']}")]
-    messages = [SystemMessage(content=system_content)] + prior
 
-    log.info("task=%s agent iteration=%d", state["task_id"], iteration)
+    messages = [SystemMessage(content="You are an autonomous coding agent.")] + prior
+
     response = get_llm().invoke(messages)
 
     has_tool_calls = bool(getattr(response, "tool_calls", None))
-    goto: Literal["tools", "save"] = (
-        "tools" if has_tool_calls and iteration < MAX_ITERATIONS else "save"
-    )
+    goto = "tools" if has_tool_calls and iteration < MAX_ITERATIONS else "save"
 
     return Command(update={"messages": [response], "iteration": iteration}, goto=goto)
 
 
 def node_save(state: AgentState) -> dict:
-    messages = state.get("messages", [])
+    ran_success, run_error = _last_run_python_result(state.get("messages", []))
 
-    ran_success, run_error = _last_run_python_result(messages)
+    success = ran_success if ran_success is not None else False
 
-    if ran_success is not None:
-        success = ran_success
-        last_error = run_error
-    else:
-        success = False
-        last_error = "Agent did not execute any code"
+    save_memory(state["goal"], {"success": success}, success)
 
-    result = {
-        "success": success,
-        "stdout": "",
-        "stderr": last_error or "",
-        "iteration": state["iteration"],
-    }
-    save_memory(state["goal"], result, success)
-
-    if success:
-        log.info("task=%s done after %d agent step(s)", state["task_id"], state["iteration"])
-    else:
-        log.warning(
-            "task=%s finished unsuccessfully after %d step(s): %s",
-            state["task_id"],
-            state["iteration"],
-            last_error,
-        )
-
-    return {"success": success, "last_error": last_error}
+    return {"success": success, "last_error": run_error}
 
 
 # ── Graph assembly ─────────────────────────────────────────────────────────────
@@ -301,7 +258,6 @@ def _build_graph(checkpointer):
 
     g.add_edge(START, "fetch_memory")
     g.add_edge("fetch_memory", "agent")
-    # agent returns Command(goto=...) — no conditional edge needed
     g.add_edge("tools", "agent")
     g.add_edge("save", END)
 
@@ -318,8 +274,8 @@ def _get_graph():
     if _graph is None:
         with _graph_lock:
             if _graph is None:
+                # ✅ FIX: no .setup() call
                 _checkpointer = PostgresSaver.from_conn_string(_pg_conn_string())
-                _checkpointer.setup()
                 log.info("checkpoint store ready")
                 _graph = _build_graph(_checkpointer)
     return _graph
@@ -333,8 +289,6 @@ def run_workflow(goal: str, task_id: str = None, on_iteration=None) -> dict:
     task_dir = os.path.join(OUTPUT_DIR, task_id)
     os.makedirs(task_dir, exist_ok=True)
 
-    log.info("starting task=%s goal=%r", task_id, goal)
-
     initial: AgentState = {
         "goal": goal,
         "task_id": task_id,
@@ -347,51 +301,20 @@ def run_workflow(goal: str, task_id: str = None, on_iteration=None) -> dict:
         "files_written": [],
     }
 
-    # thread_id scopes the checkpoint to this task run
-    run_config = {
-        "configurable": {
-            "thread_id": task_id,
-            "task_dir": task_dir,
-        }
-    }
-
     graph = _get_graph()
-    last_iteration = 0
 
-    # Stream node-level updates — call on_iteration as each agent step completes
-    for event in graph.stream(initial, config=run_config, stream_mode="updates"):
-        for node_name, updates in event.items():
-            if node_name == "agent":
-                new_iter = updates.get("iteration", last_iteration)
-                if on_iteration and new_iter > last_iteration:
-                    on_iteration(new_iter, updates.get("last_error"))
-                last_iteration = new_iter
-
-    # Read final state from checkpointer (complete, not partial)
-    final = graph.get_state(run_config).values
-
-    files_written = []
-    try:
-        files_written = os.listdir(task_dir)
-    except OSError:
+    for _ in graph.stream(initial):
         pass
+
+    final = graph.get_state({}).values
 
     return {
         "success": final.get("success", False),
-        "execution": {
-            "success": final.get("success", False),
-            "stdout": "",
-            "stderr": final.get("last_error") or "",
-        },
         "iterations": final.get("iteration", 0),
         "last_error": final.get("last_error"),
-        "files_written": files_written,
-        "task_dir": task_dir,
     }
 
 
-# ── Dev entrypoint ─────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     init_db()
-    run_workflow("Create a Python CLI app that reads a file and prints line count")
+    run_workflow("test task")
