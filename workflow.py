@@ -267,15 +267,25 @@ def _build_graph(checkpointer):
 _graph = None
 _checkpointer = None
 _graph_lock = threading.Lock()
+_conn = None
 
 
 def _get_graph():
-    global _graph, _checkpointer
+    global _graph, _checkpointer, _conn
     if _graph is None:
         with _graph_lock:
             if _graph is None:
-                # ✅ FIX: no .setup() call
-                _checkpointer = PostgresSaver.from_conn_string(_pg_conn_string())
+                from psycopg import Connection
+                from psycopg.rows import dict_row
+
+                _conn = Connection.connect(
+                    _pg_conn_string(),
+                    autocommit=True,
+                    prepare_threshold=0,
+                    row_factory=dict_row
+                )
+                _checkpointer = PostgresSaver(_conn)
+                _checkpointer.setup()
                 log.info("checkpoint store ready")
                 _graph = _build_graph(_checkpointer)
     return _graph
