@@ -66,7 +66,7 @@ class ArchonREPL:
         start = time.time()
 
         try:
-            final = backend.poll_until_done(task_id)
+            final = backend.poll_until_done(task_id, on_update=lambda x: None)
         except backend.ArchonAPIError as exc:
             print(f"Error: {exc}")
             return
