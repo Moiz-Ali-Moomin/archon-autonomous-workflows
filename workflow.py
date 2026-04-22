@@ -279,10 +279,7 @@ def _get_graph():
                 from psycopg.rows import dict_row
 
                 _conn = Connection.connect(
-                    _pg_conn_string(),
-                    autocommit=True,
-                    prepare_threshold=0,
-                    row_factory=dict_row
+                    _pg_conn_string(), autocommit=True, prepare_threshold=0, row_factory=dict_row
                 )
                 _checkpointer = PostgresSaver(_conn)
                 _checkpointer.setup()
