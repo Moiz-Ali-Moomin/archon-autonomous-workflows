@@ -225,9 +225,17 @@ def node_agent(state: AgentState) -> Command[Literal["tools", "save"]]:
     if not prior:
         prior = [HumanMessage(content=f"Goal: {state['goal']}")]
 
-    messages = [SystemMessage(content="You are an autonomous coding agent.")] + prior
+    system_prompt = (
+        "You are an autonomous coding agent.\n"
+        "You MUST use the provided tools to write and execute code.\n"
+        "Do NOT just reply with code in plain text.\n"
+        "You must run the code to verify it works successfully."
+    )
+    messages = [SystemMessage(content=system_prompt)] + prior
 
     response = get_llm().invoke(messages)
+
+    log.info(f"LLM Response (iteration {iteration}): {response.content}")
 
     has_tool_calls = bool(getattr(response, "tool_calls", None))
     goto = "tools" if has_tool_calls and iteration < MAX_ITERATIONS else "save"
@@ -239,6 +247,13 @@ def node_save(state: AgentState) -> dict:
     ran_success, run_error = _last_run_python_result(state.get("messages", []))
 
     success = ran_success if ran_success is not None else False
+
+    if not success and not run_error:
+        last_msg = state.get("messages", [])[-1]
+        if getattr(last_msg, "content", None):
+            run_error = f"Agent failed to execute successfully. Last response: {last_msg.content}"
+        else:
+            run_error = "Agent stopped without executing any tools."
 
     save_memory(state["goal"], {"success": success}, success)
 
@@ -309,10 +324,18 @@ def run_workflow(goal: str, task_id: str = None, on_iteration=None) -> dict:
     }
 
     graph = _get_graph()
-    config = {"configurable": {"thread_id": task_id}}
+    config = {
+        "configurable": {"thread_id": task_id},
+        "recursion_limit": MAX_ITERATIONS * 2 + 5
+    }
 
-    for _ in graph.stream(initial, config):
-        pass
+    for event in graph.stream(initial, config):
+        if on_iteration:
+            current_state = graph.get_state(config).values
+            on_iteration(
+                current_state.get("iteration", 0),
+                current_state.get("last_error")
+            )
 
     final = graph.get_state(config).values
 
