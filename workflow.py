@@ -244,15 +244,17 @@ def node_agent(state: AgentState) -> Command[Literal["tools", "save", "agent"]]:
 
     # Fallback: force retry if no tools were called
     if not has_tool_calls and iteration < MAX_ITERATIONS:
-        log.warning(f"Agent failed to output tool calls on iteration {iteration}. Forcing retry.")
+        log.warning(
+            f"Agent failed to output tool calls on iteration {iteration}. Forcing retry."
+        )
         retry_msg = HumanMessage(
             content="You did not use any tools. You MUST use a tool to accomplish the task. "
-                    "Do not reply with plain text."
+            "Do not reply with plain text."
         )
         # Route back to itself within the same workflow to try again
         return Command(
             update={"messages": [response, retry_msg], "iteration": iteration},
-            goto="agent"
+            goto="agent",
         )
 
     goto = "tools" if has_tool_calls and iteration < MAX_ITERATIONS else "save"
@@ -343,7 +345,7 @@ def run_workflow(goal: str, task_id: str = None, on_iteration=None) -> dict:
     graph = _get_graph()
     config = {
         "configurable": {"thread_id": task_id},
-        "recursion_limit": MAX_ITERATIONS * 3 + 10
+        "recursion_limit": MAX_ITERATIONS * 3 + 10,
     }
 
     for _event in graph.stream(initial, config):
@@ -351,7 +353,7 @@ def run_workflow(goal: str, task_id: str = None, on_iteration=None) -> dict:
             current_state = graph.get_state(config).values
             on_iteration(
                 current_state.get("iteration", 0),
-                current_state.get("last_error")
+                current_state.get("last_error"),
             )
 
     final = graph.get_state(config).values
