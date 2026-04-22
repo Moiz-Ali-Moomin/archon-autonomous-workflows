@@ -244,9 +244,7 @@ def node_agent(state: AgentState) -> Command[Literal["tools", "save", "agent"]]:
 
     # Fallback: force retry if no tools were called
     if not has_tool_calls and iteration < MAX_ITERATIONS:
-        log.warning(
-            f"Agent failed to output tool calls on iteration {iteration}. Forcing retry."
-        )
+        log.warning(f"Agent failed to output tool calls on iteration {iteration}. Forcing retry.")
         retry_msg = HumanMessage(
             content="You did not use any tools. You MUST use a tool to accomplish the task. "
             "Do not reply with plain text."
@@ -270,9 +268,7 @@ def node_save(state: AgentState) -> dict:
     if not success and not run_error:
         last_msg = state.get("messages", [])[-1]
         if getattr(last_msg, "content", None):
-            run_error = (
-                f"Agent failed to execute successfully. Last response: {last_msg.content}"
-            )
+            run_error = f"Agent failed to execute successfully. Last response: {last_msg.content}"
         else:
             run_error = "Agent stopped without executing any tools."
 
@@ -377,9 +373,7 @@ def run_workflow(goal: str, task_id: str = None, on_iteration=None) -> dict:
                     .strip()
                 )
             if "stderr:\n" in content:
-                stderr_part = (
-                    content.split("stderr:\n")[1].split("exit_code:")[0].strip()
-                )
+                stderr_part = content.split("stderr:\n")[1].split("exit_code:")[0].strip()
             execution = {"stdout": stdout_part, "stderr": stderr_part}
             break
 
