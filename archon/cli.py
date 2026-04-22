@@ -14,7 +14,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import config
 import api as backend
-import ui
 import utils
 
 try:
