@@ -1,4 +1,4 @@
-# Gemma Agent Platform
+# Gemma Agent Platform Architecture
 
 A distributed autonomous coding agent. Send it a goal over HTTP, it writes Python code to solve it, executes it, and self-corrects on failure — all asynchronously.
 
